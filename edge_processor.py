@@ -128,15 +128,18 @@ mqtt_client.on_message = on_message
 # ==========================================
 def sync_to_cloud():
     print("Iniciando el motor de sincronización hacia la API...")
+    backoff_delay = 1
+    max_backoff = 60
+
     while True:
         dato_crudo = None
         try:
             # Extraer el dato más antiguo de la cola derecha (RPOP)
             dato_crudo = redis_client.rpop(REDIS_QUEUE)
-            
+
             if dato_crudo:
                 data = json.loads(dato_crudo)
-                
+
                 # Map spanish keys from Arduino to english keys for the Java API
                 api_data = {
                     "deviceId": data.get("deviceId"),
@@ -164,27 +167,41 @@ def sync_to_cloud():
                     headers=headers,
                     timeout=5,
                 )
-                
+
                 if response.status_code in (200, 201):
                     print("[API] Subida exitosa.")
+                    backoff_delay = 1
                 else:
-                    print(f"[API] Rechazó el dato (HTTP {response.status_code}). Devolviendo a la cola...")
-                    # Si la API falla pero hay internet, devolvemos a la cola derecha para reintentar
-                    redis_client.rpush(REDIS_QUEUE, dato_crudo) 
+                    print(
+                        f"[API] Rechazó el dato (HTTP {response.status_code}). "
+                        f"Devolviendo a la cola y reintentando en {backoff_delay}s..."
+                    )
+                    # Si la API falla, devolvemos a la cola derecha para reintentar con backoff
+                    redis_client.rpush(REDIS_QUEUE, dato_crudo)
+                    time.sleep(backoff_delay)
+                    backoff_delay = min(backoff_delay * 2, max_backoff)
             else:
                 # Si la cola está vacía, dormimos 1 segundo para no saturar el CPU de la laptop
+                backoff_delay = 1
                 time.sleep(1)
-                
+
         except requests.exceptions.RequestException as e:
             print(f"🔌 [RED] Sin internet o API caída: {e}")
             if dato_crudo:
-                print("[REDIS] Rescatando el dato y devolviéndolo a la cola...")
+                print(
+                    f"[REDIS] Rescatando el dato y devolviéndolo a la cola. "
+                    f"Reintentando en {backoff_delay}s..."
+                )
                 redis_client.rpush(REDIS_QUEUE, dato_crudo)
-            # Si se cae el internet, esperamos más tiempo (5s) antes de volver a estresar la red
-            time.sleep(5) 
+            # Si se cae el internet, aplicamos backoff exponencial antes de reintentar
+            time.sleep(backoff_delay)
+            backoff_delay = min(backoff_delay * 2, max_backoff)
         except Exception as e:
             print(f"[SISTEMA] Error inesperado: {e}")
-            time.sleep(2)
+            if dato_crudo:
+                redis_client.rpush(REDIS_QUEUE, dato_crudo)
+            time.sleep(backoff_delay)
+            backoff_delay = min(backoff_delay * 2, max_backoff)
 
 # ==========================================
 # 3.5. EL PUENTE HTTP (FLASK -> MQTT)

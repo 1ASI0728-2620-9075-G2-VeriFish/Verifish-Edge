@@ -8,5 +8,11 @@ services:
       - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
   edge-redis:
     image: redis:alpine
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:

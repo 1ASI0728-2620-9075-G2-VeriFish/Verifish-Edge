@@ -12,6 +12,7 @@ load_dotenv()
 BROKER = os.getenv("MQTT_BROKER", "localhost")
 PORT = int(os.getenv("MQTT_PORT", "1883"))
 TOPIC = os.getenv("MQTT_TOPIC", "yaku/telemetria/pond/1")
+DEVICE_ID = os.getenv("DEVICE_ID", "YAKU-001")
 
 client = mqtt.Client(client_id="ArduinoSimulador")
 
@@ -23,6 +24,7 @@ try:
     while True:
         # Generar datos aleatorios simulando los sensores físicos de agua
         payload = {
+            "deviceId": DEVICE_ID,
             "temperature": round(random.uniform(20.0, 35.0), 2),
             "ph": round(random.uniform(6.5, 8.5), 2),
             "turbidity": round(random.uniform(0.5, 5.0), 2)
