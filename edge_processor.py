@@ -9,6 +9,8 @@ import paho.mqtt.client as mqtt
 from flask import Flask, request, jsonify, Response
 from dotenv import load_dotenv
 
+from signing import sign
+
 # Cargar variables de entorno desde .env
 load_dotenv()
 
@@ -31,13 +33,25 @@ REDIS_QUEUE = os.getenv("REDIS_QUEUE", "telemetry_queue")
 # API Destino (Backend / Ingest Endpoint)
 API_URL = os.getenv("API_URL", "http://localhost:8080/api/v1/telemetry/manual-ingest")
 
+# Firma HMAC de las lecturas (headers X-Farm-Id y X-Signature)
+FARM_ID = os.getenv("FARM_ID", "").strip()
+FARM_TOKEN = os.getenv("FARM_TOKEN", "").strip()
+
+if not FARM_ID or not FARM_TOKEN:
+    print("Faltan FARM_ID y/o FARM_TOKEN en el .env. Son obligatorios para firmar la telemetría.")
+    sys.exit(1)
+
+if not FARM_ID.isdigit():
+    print("FARM_ID debe ser numérico (el backend lo recibe como Long en X-Farm-Id).")
+    sys.exit(1)
+
 # Inicializar conexión a Redis
 try:
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     redis_client.ping()
-    print("✅ Conectado a Redis")
+    print("Conectado a Redis")
 except Exception as e:
-    print(f"❌ Error conectando a Redis: {e}")
+    print(f"Error conectando a Redis: {e}")
     sys.exit(1)
 
 # ==========================================
@@ -45,33 +59,33 @@ except Exception as e:
 # ==========================================
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        print(f"✅ Conectado a Mosquitto MQTT en {MQTT_BROKER}")
+        print(f"Conectado a Mosquitto MQTT en {MQTT_BROKER}")
         client.subscribe(MQTT_TOPIC)
         client.subscribe("yaku/config/#")
         client.subscribe("yaku/command/devices/#")
     else:
-        print(f"❌ Fallo al conectar a MQTT. Código: {rc}")
+        print(f"Fallo al conectar a MQTT. Código: {rc}")
 
 def on_message(client, userdata, msg):
     payload = msg.payload.decode("utf-8")
-    print(f"\n📥 [MQTT] Recibido en tópico '{msg.topic}': {payload}")
+    print(f"\n [MQTT] Recibido en tópico '{msg.topic}': {payload}")
     
     if msg.topic.startswith("yaku/config/thresholds/"):
         species = msg.topic.split("/")[-1]
         redis_client.set(f"config:species:{species}", payload)
-        print(f"⚙️ [REDIS] Configuración de umbrales guardada para especie {species}")
+        print(f"[REDIS] Configuración de umbrales guardada para especie {species}")
         return
         
     if msg.topic.startswith("yaku/config/devices/"):
         device_id = msg.topic.split("/")[-1]
         redis_client.set(f"route:device:{device_id}", payload)
-        print(f"🔗 [REDIS] Routing guardado para dispositivo {device_id} -> {payload}")
+        print(f"[REDIS] Routing guardado para dispositivo {device_id} -> {payload}")
         return
         
     if msg.topic.startswith("yaku/command/devices/"):
         device_id = msg.topic.split("/")[-1]
         redis_client.setex(f"cmd:device:{device_id}", 30, payload)
-        print(f"⚡ [REDIS] Comando remoto guardado para {device_id} -> {payload} (Expira en 30s)")
+        print(f"[REDIS] Comando remoto guardado para {device_id} -> {payload} (Expira en 30s)")
         return
     
     try:
@@ -82,10 +96,10 @@ def on_message(client, userdata, msg):
         
         # Empujar a la cola izquierda de Redis (FIFO)
         redis_client.lpush(REDIS_QUEUE, json.dumps(data))
-        print(f"💾 [REDIS] Dato guardado en la cola local para dispositivo {data.get('deviceId', 'Desconocido')}")
+        print(f"[REDIS] Dato guardado en la cola local para dispositivo {data.get('deviceId', 'Desconocido')}")
 
     except json.JSONDecodeError:
-        print("⚠️ [ERROR] El payload no es un JSON válido")
+        print("[ERROR] El payload no es un JSON válido")
 
 # Configurar el cliente MQTT
 mqtt_client = mqtt.Client(client_id="YakuEdgeProcessor")
@@ -96,7 +110,7 @@ mqtt_client.on_message = on_message
 # 3. EL SINCRONIZADOR (REDIS -> NUBE)
 # ==========================================
 def sync_to_cloud():
-    print("☁️ Iniciando el motor de sincronización hacia la API...")
+    print("Iniciando el motor de sincronización hacia la API...")
     while True:
         dato_crudo = None
         try:
@@ -113,15 +127,31 @@ def sync_to_cloud():
                     "turbidity": float(data.get("turbidity", 0)),
                     "ica": float(data.get("ica", 0)) if "ica" in data else None
                 }
-                print(f"🚀 [API] Enviando dato a la nube: {api_data}")
-                
+                print(f"[API] Enviando dato a la nube: {api_data}")
+
+                # Firmar exactamente los mismos bytes que se envían:
+                # el backend valida HMAC-SHA256(body crudo, FARM_TOKEN).
+                body = json.dumps(api_data, separators=(",", ":"))
+                signature = sign(body, FARM_TOKEN)
+                headers = {
+                    "Content-Type": "application/json",
+                    "X-Farm-Id": FARM_ID,
+                    "X-Signature": signature,
+                }
+                print(f"[HMAC] X-Farm-Id={FARM_ID} X-Signature={signature}")
+
                 # Disparar hacia la API (con un límite de 5 segundos de espera)
-                response = requests.post(API_URL, json=api_data, timeout=5)
+                response = requests.post(
+                    API_URL,
+                    data=body.encode("utf-8"),
+                    headers=headers,
+                    timeout=5,
+                )
                 
                 if response.status_code in (200, 201):
-                    print("✅ [API] Subida exitosa.")
+                    print("[API] Subida exitosa.")
                 else:
-                    print(f"❌ [API] Rechazó el dato (HTTP {response.status_code}). Devolviendo a la cola...")
+                    print(f"[API] Rechazó el dato (HTTP {response.status_code}). Devolviendo a la cola...")
                     # Si la API falla pero hay internet, devolvemos a la cola derecha para reintentar
                     redis_client.rpush(REDIS_QUEUE, dato_crudo) 
             else:
@@ -131,12 +161,12 @@ def sync_to_cloud():
         except requests.exceptions.RequestException as e:
             print(f"🔌 [RED] Sin internet o API caída: {e}")
             if dato_crudo:
-                print("💾 [REDIS] Rescatando el dato y devolviéndolo a la cola...")
+                print("[REDIS] Rescatando el dato y devolviéndolo a la cola...")
                 redis_client.rpush(REDIS_QUEUE, dato_crudo)
             # Si se cae el internet, esperamos más tiempo (5s) antes de volver a estresar la red
             time.sleep(5) 
         except Exception as e:
-            print(f"🔥 [SISTEMA] Error inesperado: {e}")
+            print(f"[SISTEMA] Error inesperado: {e}")
             time.sleep(2)
 
 # ==========================================
@@ -146,7 +176,7 @@ def sync_to_cloud():
 def ingest_http():
     try:
         data = request.json
-        print(f"\n🌐 [HTTP] Recibido desde Arduino: {data}")
+        print(f"\n[HTTP] Recibido desde Arduino: {data}")
         # Publicamos internamente en Mosquitto simulando ser un dispositivo físico
         mqtt_client.publish("yaku/telemetria/pond/1", json.dumps(data))
         
@@ -171,7 +201,7 @@ def ingest_http():
                         response_str += "\n"
                         return Response(response_str, status=200, mimetype='text/plain')
                     except Exception as e:
-                        print(f"⚠️ [ERROR] Parseando config JSON desde Redis: {e}")
+                        print(f"[ERROR] Parseando config JSON desde Redis: {e}")
         
         return jsonify({"status": "ok", "message": "Puenteado a MQTT"}), 200
     except Exception as e:
@@ -212,12 +242,12 @@ if __name__ == "__main__":
     sync_thread.start()
     
     # Arrancar el servidor web (Flask) en el hilo principal
-    print("\n🚀 [FLASK] Iniciando Servidor Puente HTTP en puerto 5000...")
+    print("\n[FLASK] Iniciando Servidor Puente HTTP en puerto 5000...")
     try:
         # debug=False y use_reloader=False son necesarios para no crear múltiples clientes MQTT
         app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
     except KeyboardInterrupt:
-        print("\n🛑 Apagando el Nodo Edge...")
+        print("\n Apagando el Nodo Edge...")
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
         print("Apagado seguro completado.")
