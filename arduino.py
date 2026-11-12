@@ -17,7 +17,7 @@ client = mqtt.Client(client_id="ArduinoSimulador")
 
 try:
     client.connect(BROKER, PORT)
-    print("🤖 Fake Arduino conectado a MQTT. Enviando datos cada 3 segundos...")
+    print("Fake Arduino conectado a MQTT. Enviando datos cada 3 segundos...")
     print("Presiona Ctrl+C para detenerlo.\n")
     
     while True:
@@ -30,12 +30,12 @@ try:
         
         # Publicar el mensaje en el broker
         client.publish(TOPIC, json.dumps(payload))
-        print(f"📡 [SIMULADOR] Publicado en {TOPIC}: {payload}")
+        print(f"[SIMULADOR] Publicado en {TOPIC}: {payload}")
         
         time.sleep(3)
 
 except ConnectionRefusedError:
-    print("❌ Error: No se pudo conectar a Mosquitto. ¿Está corriendo Docker?")
+    print("Error: No se pudo conectar a Mosquitto. ¿Está corriendo Docker?")
 except KeyboardInterrupt:
-    print("\n🛑 Apagando el simulador...")
+    print("\nApagando el simulador...")
     client.disconnect()
