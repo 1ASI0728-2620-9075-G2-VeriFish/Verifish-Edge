@@ -10,6 +10,11 @@ from flask import Flask, request, jsonify, Response
 from dotenv import load_dotenv
 
 from signing import sign
+from false_positive_filter import (
+    FalsePositiveFilter,
+    format_discarded,
+    reading_source,
+)
 
 # Cargar variables de entorno desde .env
 load_dotenv()
@@ -57,6 +62,11 @@ except Exception as e:
 # ==========================================
 # 2. EL RECEPTOR (MQTT -> REDIS)
 # ==========================================
+# Filtro de falsos positivos: mediana de las últimas 3 lecturas por estanque
+# y parámetro. Se aplica antes del ICA y antes de encolar en Redis.
+telemetry_filter = FalsePositiveFilter()
+
+
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print(f"Conectado a Mosquitto MQTT en {MQTT_BROKER}")
@@ -93,6 +103,13 @@ def on_message(client, userdata, msg):
         
         # El payload ahora se envía tal cual, porque contiene el 'deviceId' (ej: YAKU-001)
         # El backend se encargará de buscar en su base de datos a qué 'pondId' pertenece.
+        
+        # Filtrar picos antes de encolar: una lectura aislada fuera de rango
+        # no debe llegar al ICA ni a la nube.
+        source = reading_source(data, msg.topic)
+        data, descartados = telemetry_filter.apply(data, source)
+        for linea in format_discarded(source, descartados):
+            print(linea)
         
         # Empujar a la cola izquierda de Redis (FIFO)
         redis_client.lpush(REDIS_QUEUE, json.dumps(data))
