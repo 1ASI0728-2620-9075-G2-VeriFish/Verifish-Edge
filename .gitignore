@@ -12,6 +12,7 @@ venv/
 env/
 ENV/
 .venv/
+plan-de-implementacion.md
 
 # Testing & coverage
 .pytest_cache/
