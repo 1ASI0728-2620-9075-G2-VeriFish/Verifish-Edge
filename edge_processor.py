@@ -15,6 +15,7 @@ from false_positive_filter import (
     format_discarded,
     reading_source,
 )
+from water_quality import compute_ica, to_float
 
 # Cargar variables de entorno desde .env
 load_dotenv()
@@ -141,12 +142,20 @@ def sync_to_cloud():
                 data = json.loads(dato_crudo)
 
                 # Map spanish keys from Arduino to english keys for the Java API
+                ph = to_float(data.get("ph"))
+                ica = compute_ica(data)
                 api_data = {
                     "deviceId": data.get("deviceId"),
                     "temperature": float(data.get("temperature", 0)),
                     "turbidity": float(data.get("turbidity", 0)),
-                    "ica": float(data.get("ica", 0)) if "ica" in data else None
+                    "ph": ph,
+                    "ica": ica
                 }
+                print(
+                    f"[ICA] {ica} | pH={ph} "
+                    f"temp={api_data['temperature']} "
+                    f"turb={api_data['turbidity']}"
+                )
                 print(f"[API] Enviando dato a la nube: {api_data}")
 
                 # Firmar exactamente los mismos bytes que se envían:
