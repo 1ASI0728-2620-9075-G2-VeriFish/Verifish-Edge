@@ -53,11 +53,13 @@ print("Presiona Ctrl+C para detenerlo.\n")
 
 try:
     while True:
-        # Generar datos aleatorios simulando los sensores físicos de agua
+        # Generar datos aleatorios simulando los sensores físicos de agua.
+        # Los rangos rodean el óptimo de trucha (pH 6.5-8.0, 10-18 °C) para que
+        # el ICA varíe entre bueno y malo en vez de salir siempre bajo.
         payload = {
             "deviceId": DEVICE_ID,
-            "temperature": round(random.uniform(20.0, 35.0), 2),
-            "ph": round(random.uniform(6.5, 8.5), 2),
+            "temperature": round(random.uniform(9.0, 21.0), 2),
+            "ph": round(random.uniform(6.2, 8.6), 2),
             "turbidity": round(random.uniform(0.5, 5.0), 2)
         }
 
