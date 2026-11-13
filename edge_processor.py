@@ -220,11 +220,17 @@ def ingest_http():
     try:
         data = request.json
         print(f"\n[HTTP] Recibido desde Arduino: {data}")
-        # Publicamos internamente en Mosquitto simulando ser un dispositivo físico
-        mqtt_client.publish("yaku/telemetria/pond/1", json.dumps(data))
+        device_id = data.get("deviceId") if isinstance(data, dict) else None
+        pond_id = data.get("pondId") if isinstance(data, dict) else None
+
+        # El tópico depende de quién envía: pondId si viene, si no el deviceId.
+        # Sin ninguno de los dos se mantiene el estanque 1 por compatibilidad.
+        topic_id = pond_id or device_id or "1"
+        topic = f"yaku/telemetria/pond/{topic_id}"
+        mqtt_client.publish(topic, json.dumps(data))
+        print(f"[HTTP] Puenteado a MQTT en {topic}")
         
         # Resolver configuración para el dispositivo
-        device_id = data.get("deviceId") if isinstance(data, dict) else None
         if device_id:
             species = redis_client.get(f"route:device:{device_id}")
             if species:
